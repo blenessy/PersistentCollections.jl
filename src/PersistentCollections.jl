@@ -66,6 +66,7 @@ module PersistentCollections
                 return o
             end
         end
+        Base.pointer(val::MDBValue) = pointer_from_objref(val)
 
         struct MDBStat
             ms_psize::Cuint
@@ -88,10 +89,6 @@ module PersistentCollections
         Base.convert(::Type{MDBValue}, val) = MDBValue(val)
         Base.convert(::Type{T}, val::MDBValue{T}) where {T} = val.data
 
-        #Base.convert(::Type{String}, val::MDBValue) = unsafe_string(convert(Ptr{UInt8}, val.ptr), val.size)
-        #Base.convert(::Type{Array{T,N}}, val::MDBValue) where {T,N} = reinterpret(T, unsafe_wrap(Array, convert(Ptr{UInt8}, val.ptr), val.size))
-        #Base.convert(::Type{T}, val::MDBValue) where {T} = unsafe_load(convert(Ptr{T}, val.ptr))
-        
         struct LMDBError <: Exception
             code::Cint
         end
@@ -180,25 +177,19 @@ module PersistentCollections
             return nothing
         end
 
-        function mdb_put(txn::Ptr{Cvoid}, dbi::Cuint, key::MDBValue, val::MDBValue, flags::Cuint)
-            keyp = pointer_from_objref(key)
-            valp = pointer_from_objref(val)
-            @chkres ccall((:mdb_put, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{Cvoid}, Ptr{Cvoid}, Cuint), txn, dbi, keyp, valp, flags)
+        function mdb_put(txn::Ptr{Cvoid}, dbi::Cuint, key::Ptr{Cvoid}, val::Ptr{Cvoid}, flags::Cuint)
+            @chkres ccall((:mdb_put, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{Cvoid}, Ptr{Cvoid}, Cuint), txn, dbi, key, val, flags)
             return nothing
         end        
 
-        function mdb_del(txn::Ptr{Cvoid}, dbi::Cuint, key::MDBValue, val::Union{MDBValue,Nothing})
-            keyp = pointer_from_objref(key)
-            valp = isnothing(val) ? C_NULL : pointer_from_objref(val)
-            res = ccall((:mdb_del, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{Cvoid}, Ptr{Cvoid}), txn, dbi, keyp, valp)
+        function mdb_del(txn::Ptr{Cvoid}, dbi::Cuint, key::Ptr{Cvoid}, val::Ptr{Cvoid})
+            res = ccall((:mdb_del, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{Cvoid}, Ptr{Cvoid}), txn, dbi, key, val)
             (res == MDB_SUCCESS || res == MDB_NOTFOUND) || throw(LMDBError(res))
             return res != MDB_NOTFOUND
         end        
 
-        function mdb_get!(txn::Ptr{Cvoid}, dbi::Cuint, key::MDBValue, val::MDBValue)
-            keyp = pointer_from_objref(key)
-            valp = pointer_from_objref(val)
-            res = ccall((:mdb_get, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{Cvoid}, Ptr{Cvoid}), txn, dbi, keyp, valp)
+        function mdb_get!(txn::Ptr{Cvoid}, dbi::Cuint, key::Ptr{Cvoid}, val::Ptr{Cvoid})
+            res = ccall((:mdb_get, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{Cvoid}, Ptr{Cvoid}), txn, dbi, key, val)
             (res == MDB_SUCCESS || res == MDB_NOTFOUND) || throw(LMDBError(res))
             return res != MDB_NOTFOUND
         end        
@@ -214,10 +205,8 @@ module PersistentCollections
             return nothing
         end
 
-        function mdb_cursor_get!(cur::Ptr{Cvoid}, key::MDBValue, val::MDBValue, op::MDBCursorOp)
-            keyp = pointer_from_objref(key)
-            valp = pointer_from_objref(val)
-            res = ccall((:mdb_cursor_get, liblmdb), Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cint), cur, keyp, valp, op)
+        function mdb_cursor_get!(cur::Ptr{Cvoid}, key::Ptr{Cvoid}, val::Ptr{Cvoid}, op::MDBCursorOp)
+            res = ccall((:mdb_cursor_get, liblmdb), Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cint), cur, key, val, op)
             (res == MDB_SUCCESS || res == MDB_NOTFOUND) || throw(LMDBError(res))
             return res != MDB_NOTFOUND
         end
@@ -327,7 +316,8 @@ module PersistentCollections
             dbi = LMDB.mdb_dbi_open(txn, dbname, dbiflags)
             cur = LMDB.mdb_cursor_open(txn, dbi)
             i = one(Int)
-            while LMDB.mdb_cursor_get!(cur, key, val, op)
+            pkey, pval = pointer(key), pointer(val)
+            while LMDB.mdb_cursor_get!(cur, pkey, pval, op)
                 nextop = func(i)
                 if nextop isa LMDB.MDBCursorOp
                     op = nextop
@@ -349,14 +339,14 @@ module PersistentCollections
         @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
         mdbkey = convert(LMDB.MDBValue, key)
         mdbval = convert(LMDB.MDBValue, val)
-        GC.@preserve mdbkey mdbval LMDB.mdb_put(txn, dbi, mdbkey, mdbval, flags)
+        GC.@preserve mdbkey mdbval LMDB.mdb_put(txn, dbi, pointer(mdbkey), pointer(mdbval), flags)
         return nothing
     end
 
     function Base.delete!(txn::Ptr{Cvoid}, dbi::Cuint, key)
         @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
         mdbkey = convert(LMDB.MDBValue, key)
-        return GC.@preserve mdbkey LMDB.mdb_del(txn, dbi, mdbkey, nothing)
+        return GC.@preserve mdbkey LMDB.mdb_del(txn, dbi, pointer(mdbkey), C_NULL)
     end
 
     function Base.get(txn::Ptr{Cvoid}, dbi::Cuint, key, default::V) where {V}
@@ -368,7 +358,7 @@ module PersistentCollections
     function load!(txn::Ptr{Cvoid}, dbi::Cuint, key, output::LMDB.MDBValue)
         @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
         mdbkey = convert(LMDB.MDBValue, key)
-        found = GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, mdbkey, output)
+        found = GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, pointer(mdbkey), pointer(output))
         return found
     end
 
