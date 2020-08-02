@@ -45,7 +45,7 @@ fastval = LMDB.MDBValue("fastval")
 write(env) do txn, dbi
     put!(txn, dbi, fastkey, fastval)
     put!(txn, dbi, "stringkey", "stringval")
-    put!(txn, dbi, Vector{UInt8}("byteskey"), Vector{UInt8}("bytesval"))
+    put!(txn, dbi, "byteskey", Vector{UInt8}("bytesval"))
     put!(txn, dbi, "intkey", 1234)
     put!(txn, dbi, "floatkey", 2.5)
     put!(txn, dbi, "tuplekey", (1, 2.5))
@@ -58,7 +58,7 @@ end
 read(env) do txn, dbi
     @test get(txn, dbi, fastkey, "") == "fastval"
     @test get(txn, dbi, "stringkey", "") == "stringval"
-    @test get(txn, dbi, Vector{UInt8}("byteskey"), UInt8[]) == Vector{UInt8}("bytesval")
+    @test get(txn, dbi, "byteskey", UInt8[]) == Vector{UInt8}("bytesval")
     @test get(txn, dbi, "intkey", 0) == 1234
     @test get(txn, dbi, "floatkey", 0.0) == 2.5
     @test get(txn, dbi, "tuplekey", (0, 0.0)) == (1, 2.5)
@@ -74,7 +74,7 @@ write(env) do txn, dbi
     @test delete!(txn, dbi, fastkey)
     @test delete!(txn, dbi, "stringkey")
     # idempotency
-    @test !delete!(txn, dbi, "stringkey")
+    @test !delete!(txn, dbi, fastkey)
 end
 
 # check deleted
@@ -83,6 +83,18 @@ read(env) do txn, dbi
     @test get(txn, dbi, "stringkey", "") == ""
 end
 
+# iteration
+key, val = LMDB.MDBValue(), LMDB.MDBValue()
+sorted_keys = String[]
+foreach(env, key, val) do i
+    push!(sorted_keys, convert(String, key))
+    return LMDB.MDB_NEXT
+end
+# should be sorted lexically by default
+@test !isempty(sorted_keys)
+@test sorted_keys == sort(sorted_keys)
+
+n = length(sorted_keys)
 if get(ENV, "BENCH", "") == "true"
     @info "Benchmarking write(::Environment) ..."
     @btime write(env) do txn, dbi
@@ -91,5 +103,9 @@ if get(ENV, "BENCH", "") == "true"
     @info "Benchmarking read(::Environment) ..."
     @btime read(env) do txn, dbi
         load!(txn, dbi, fastkey, fastval);
+    end
+    @info "Benchmarking foreach(::Environment, ::MDBValue, ::MDBValue) ($n entries) ..."
+    @btime foreach(env, fastkey, fastval) do _
+        return nothing
     end
 end

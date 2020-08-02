@@ -2,14 +2,40 @@ module PersistentCollections
     module LMDB
         using LMDB_jll
 
-        # Error codes (I care about)
+        # Error codes (TODO: define more)
         const MDB_SUCCESS = Cint(0)
         const MDB_NOTFOUND = Cint(-30798)
         
-        # Environment flags (I care about)
+        # Environment flags (TODO: define more)
         const MDB_NOSUBDIR = Cuint(0x4000)
         const MDB_RDONLY = Cuint(0x20000)
         const MDB_NOTLS = Cuint(0x200000)
+
+        # Cursor operation constants (TODO: define more)
+        @enum MDBCursorOp::Cint begin
+            MDB_FIRST
+            MDB_FIRST_DUP
+            MDB_GET_BOTH
+            MDB_GET_BOTH_RANGE
+            MDB_GET_CURRENT
+            MDB_GET_MULTIPLE
+            MDB_LAST
+            MDB_LAST_DUP
+            MDB_NEXT
+            MDB_NEXT_DUP
+            MDB_NEXT_MULTIPLE
+            MDB_NEXT_NODUP
+            MDB_PREV
+            MDB_PREV_DUP
+            MDB_PREV_NODUP
+            MDB_SET
+            MDB_SET_KEY
+            MDB_SET_RANGE
+            MDB_PREV_MULTIPLE
+        end
+
+        # Common flag combo
+        const DEFAULT_RO_FLAGS = LMDB.MDB_RDONLY | LMDB.MDB_NOTLS
 
         const Cmode_t = Cushort
 
@@ -167,6 +193,25 @@ module PersistentCollections
             return res != MDB_NOTFOUND
         end        
 
+        function mdb_cursor_open(txn::Ptr{Cvoid}, dbi::Cuint)
+            handle = Ptr{Cvoid}[C_NULL]
+            @chkres ccall((:mdb_cursor_open, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{Ptr{Cvoid}}), txn, dbi, handle)
+            return handle[1]
+        end
+
+        function mdb_cursor_close(cur::Ptr{Cvoid})
+            ccall((:mdb_cursor_close, liblmdb), Cvoid, (Ptr{Cvoid},), cur)
+            return nothing
+        end
+
+        function mdb_cursor_get(cur::Ptr{Cvoid}, key::MDBValue, val::MDBValue, op::MDBCursorOp)
+            keyp = pointer_from_objref(key)
+            valp = pointer_from_objref(val)
+            res = ccall((:mdb_cursor_get, liblmdb), Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cint), cur, keyp, valp, op)
+            (res == MDB_SUCCESS || res == MDB_NOTFOUND) || throw(LMDBError(res))
+            return res != MDB_NOTFOUND
+        end
+
         function __init__()
             @info mdb_version()
             # this will catch changes in struct layout
@@ -184,7 +229,7 @@ module PersistentCollections
     const OPENED_ENVS = Dict{String,Environment}()
 
     function Environment(path::String; flags::Cuint=zero(Cuint), mode::LMDB.Cmode_t = 0o755, maxdbs::Cuint = zero(Cuint), mapsize::Csize_t = Csize_t(10485760),
-                                       maxreaders::Cuint = Cuint(126), rotxnflags::Cuint = (LMDB.MDB_RDONLY | LMDB.MDB_NOTLS))
+                                       maxreaders::Cuint = Cuint(126), rotxnflags::Cuint = LMDB.DEFAULT_RO_FLAGS)
         env = get(OPENED_ENVS, path, nothing)
         if isnothing(env)
             rotxn = [C_NULL for i in 1:Threads.nthreads()]
@@ -256,7 +301,29 @@ module PersistentCollections
             LMDB.mdb_txn_reset(txn)
         end
     end
-        
+
+    function Base.foreach(func::Function, env::Environment, key::LMDB.MDBValue, val::LMDB.MDBValue;
+            dbname="", txnflags=LMDB.DEFAULT_RO_FLAGS, dbiflags::Cuint=zero(Cuint), op::LMDB.MDBCursorOp=LMDB.MDB_NEXT)
+        isopen(env) || error("Environment is closed")
+        txn = LMDB.mdb_txn_begin(env.handle, (LMDB.MDB_RDONLY | LMDB.MDB_NOTLS))
+        cur = C_NULL
+        try
+            dbi = LMDB.mdb_dbi_open(txn, dbname, dbiflags)
+            cur = LMDB.mdb_cursor_open(txn, dbi)
+            i = one(Int)
+            while LMDB.mdb_cursor_get(cur, key, val, op)
+                nextop = func(i)
+                if nextop isa LMDB.MDBCursorOp
+                    op = nextop
+                end
+                i += 1
+            end
+        finally
+            cur == C_NULL || LMDB.mdb_cursor_close(cur)
+            LMDB.mdb_txn_abort(txn)
+        end
+    end
+
     function Base.put!(txn::Ptr{Cvoid}, dbi::Cuint, key, val; flags=zero(Cuint))
         @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
         mdbkey = convert(LMDB.MDBValue, key)
