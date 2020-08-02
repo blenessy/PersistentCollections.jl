@@ -94,7 +94,9 @@ end
 @test !isempty(sorted_keys)
 @test sorted_keys == sort(sorted_keys)
 
-n = length(sorted_keys)
+# length
+@test length(env) == length(sorted_keys)
+
 if get(ENV, "BENCH", "") == "true"
     @info "Benchmarking write(::Environment) ..."
     @btime write(env) do txn, dbi
@@ -104,7 +106,8 @@ if get(ENV, "BENCH", "") == "true"
     @btime read(env) do txn, dbi
         load!(txn, dbi, fastkey, fastval);
     end
-    @info "Benchmarking foreach(::Environment, ::MDBValue, ::MDBValue) ($n entries) ..."
+    n = length(sorted_keys)
+    @info "Benchmarking foreach(::Environment, ::MDBValue, ::MDBValue) ($(length(env)) entries) ..."
     @btime foreach(env, fastkey, fastval) do _
         return nothing
     end

@@ -67,6 +67,16 @@ module PersistentCollections
             end
         end
 
+        struct MDBStat
+            ms_psize::Cuint
+            ms_depth::Cuint
+            ms_branch_pages::Csize_t
+            ms_leaf_pages::Csize_t
+            ms_overflow_pages::Csize_t
+            ms_entries::Csize_t
+            MDBStat() = new(zero(Cuint), zero(Cuint), zero(Csize_t), zero(Csize_t), zero(Csize_t), zero(Csize_t))
+        end
+
         # MDBValue (output) -> T
         Base.convert(::Type{String}, val::MDBValue{Nothing}) = unsafe_string(convert(Ptr{UInt8}, val.ptr), val.size)
         Base.convert(::Type{Array{T,N}}, val::MDBValue{Nothing}) where {T,N} = unsafe_wrap(Array, convert(Ptr{T}, val.ptr), val.size)
@@ -185,7 +195,7 @@ module PersistentCollections
             return res != MDB_NOTFOUND
         end        
 
-        function mdb_get(txn::Ptr{Cvoid}, dbi::Cuint, key::MDBValue, val::MDBValue)
+        function mdb_get!(txn::Ptr{Cvoid}, dbi::Cuint, key::MDBValue, val::MDBValue)
             keyp = pointer_from_objref(key)
             valp = pointer_from_objref(val)
             res = ccall((:mdb_get, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{Cvoid}, Ptr{Cvoid}), txn, dbi, keyp, valp)
@@ -204,12 +214,18 @@ module PersistentCollections
             return nothing
         end
 
-        function mdb_cursor_get(cur::Ptr{Cvoid}, key::MDBValue, val::MDBValue, op::MDBCursorOp)
+        function mdb_cursor_get!(cur::Ptr{Cvoid}, key::MDBValue, val::MDBValue, op::MDBCursorOp)
             keyp = pointer_from_objref(key)
             valp = pointer_from_objref(val)
             res = ccall((:mdb_cursor_get, liblmdb), Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cint), cur, keyp, valp, op)
             (res == MDB_SUCCESS || res == MDB_NOTFOUND) || throw(LMDBError(res))
             return res != MDB_NOTFOUND
+        end
+
+        function mdb_env_stat(env::Ptr{Cvoid})
+            statref = Ref(MDBStat())
+            @chkres ccall((:mdb_env_stat, liblmdb), Cint, (Ptr{Cvoid}, Ptr{MDBStat}), env, statref)
+            return statref[]
         end
 
         function __init__()
@@ -311,7 +327,7 @@ module PersistentCollections
             dbi = LMDB.mdb_dbi_open(txn, dbname, dbiflags)
             cur = LMDB.mdb_cursor_open(txn, dbi)
             i = one(Int)
-            while LMDB.mdb_cursor_get(cur, key, val, op)
+            while LMDB.mdb_cursor_get!(cur, key, val, op)
                 nextop = func(i)
                 if nextop isa LMDB.MDBCursorOp
                     op = nextop
@@ -322,6 +338,11 @@ module PersistentCollections
             cur == C_NULL || LMDB.mdb_cursor_close(cur)
             LMDB.mdb_txn_abort(txn)
         end
+    end
+
+    function Base.length(env::Environment)
+        isopen(env) || error("Environment is closed")
+        return LMDB.mdb_env_stat(env.handle).ms_entries
     end
 
     function Base.put!(txn::Ptr{Cvoid}, dbi::Cuint, key, val; flags=zero(Cuint))
@@ -347,7 +368,7 @@ module PersistentCollections
     function load!(txn::Ptr{Cvoid}, dbi::Cuint, key, output::LMDB.MDBValue)
         @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
         mdbkey = convert(LMDB.MDBValue, key)
-        found = GC.@preserve mdbkey LMDB.mdb_get(txn, dbi, mdbkey, output)
+        found = GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, mdbkey, output)
         return found
     end
 
