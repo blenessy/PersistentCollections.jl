@@ -272,11 +272,16 @@ module PersistentCollections
     end
 
     function Base.get(txn::Ptr{Cvoid}, dbi::Cuint, key, default::V) where {V}
+        mdbval = LMDB.MDBValue()
+        loaded = load!(txn, dbi, key, mdbval)
+        return loaded ? convert(V, mdbval) : default
+    end
+
+    function load!(txn::Ptr{Cvoid}, dbi::Cuint, key, output::LMDB.MDBValue)
         @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
         mdbkey = convert(LMDB.MDBValue, key)
-        mdbval = LMDB.MDBValue()
-        found = GC.@preserve mdbkey LMDB.mdb_get(txn, dbi, mdbkey, mdbval)
-        return found ? convert(V, mdbval) : default
+        found = GC.@preserve mdbkey LMDB.mdb_get(txn, dbi, mdbkey, output)
+        return found
     end
 
 end # module

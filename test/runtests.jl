@@ -1,7 +1,7 @@
 using Test
 using BenchmarkTools
 
-using PersistentCollections: Environment, LMDB
+using PersistentCollections: Environment, LMDB, load!
 
 const TEST_DIR="test.lmdb"
 # clean previous runs
@@ -88,15 +88,8 @@ if get(ENV, "BENCH", "") == "true"
     @btime write(env) do txn, dbi
         put!(txn, dbi, fastkey, fastval);
     end
-    @info "Benchmarking read(::Environment) with existing key ..."
+    @info "Benchmarking read(::Environment) ..."
     @btime read(env) do txn, dbi
-        get(txn, dbi, fastkey, "");
-    end
-    write(env) do txn, dbi
-        delete!(txn, dbi, fastkey)
-    end    
-    @info "Benchmarking read(::Environment) with non-existing key ..."
-    @btime read(env) do txn, dbi
-        get(txn, dbi, fastkey, "");
+        load!(txn, dbi, fastkey, fastval);
     end
 end
