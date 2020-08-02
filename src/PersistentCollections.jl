@@ -229,6 +229,7 @@ module PersistentCollections
         path::String
         maxdbs::Cuint
         rotxn::Vector{Ptr{Cvoid}}
+        wlock::ReentrantLock
     end
 
     const OPENED_ENVS = Dict{String,Environment}()
@@ -238,7 +239,7 @@ module PersistentCollections
         env = get(OPENED_ENVS, path, nothing)
         if isnothing(env)
             rotxn = [C_NULL for i in 1:Threads.nthreads()]
-            env = Environment(LMDB.mdb_env_create(), path, maxdbs, rotxn)
+            env = Environment(LMDB.mdb_env_create(), path, maxdbs, rotxn, ReentrantLock())
             LMDB.mdb_env_set_maxdbs(env.handle, maxdbs)
             LMDB.mdb_env_set_mapsize(env.handle, mapsize)
             LMDB.mdb_env_set_maxreaders(env.handle, maxreaders)
@@ -278,15 +279,17 @@ module PersistentCollections
 
     function Base.write(func::Function, env::Environment; dbname="", txnflags::Cuint=zero(Cuint), dbiflags::Cuint=zero(Cuint))
         isopen(env) || error("Environment is closed")
-        txn = LMDB.mdb_txn_begin(env.handle, txnflags)
-        commit = false
+        txn, committed = C_NULL, false
+        lock(env.wlock)
         try
+            txn = LMDB.mdb_txn_begin(env.handle, txnflags)
             dbi = LMDB.mdb_dbi_open(txn, dbname, dbiflags)
             func(txn, dbi)
             LMDB.mdb_txn_commit(txn)
-            commit = true
+            committed = true
         finally
-            commit || LMDB.mdb_txn_abort(txn)
+            (committed || txn == C_NULL) || LMDB.mdb_txn_abort(txn)
+            unlock(env.wlock)
         end
     end
 
@@ -332,7 +335,7 @@ module PersistentCollections
 
     function Base.length(env::Environment)
         isopen(env) || error("Environment is closed")
-        return LMDB.mdb_env_stat(env.handle).ms_entries
+        return convert(Int, LMDB.mdb_env_stat(env.handle).ms_entries)
     end
 
     function Base.put!(txn::Ptr{Cvoid}, dbi::Cuint, key, val; flags=zero(Cuint))

@@ -93,22 +93,43 @@ end
 # should be sorted lexically by default
 @test !isempty(sorted_keys)
 @test sorted_keys == sort(sorted_keys)
-
-# length
 @test length(env) == length(sorted_keys)
+
+# multi-threading - don't crash or deadlock while re-writing key/val
+@assert Threads.nthreads() > 1 "not possible to run multi-threading tests (re-run with JULIA_NUM_THREADS=999999)"
+@info "doing $(Threads.nthreads()) parallel writes for ~10s (should not crash or deadlock) ..."
+randvals = [rand(Int) for _ in 1:Threads.nthreads()]
+deadline = time() + 10
+writes = [zero(Int) for _ in 1:Threads.nthreads()]
+Threads.@threads for i in 1:Threads.nthreads()
+    while time() < deadline
+        write(env) do txn, dbi
+            put!(txn, dbi, fastkey, randvals[i])
+            writes[i] += 1
+        end
+    end
+end
+@info "... $(sum(writes)) writes completed!"
 
 if get(ENV, "BENCH", "") == "true"
     @info "Benchmarking write(::Environment) ..."
-    @btime write(env) do txn, dbi
-        put!(txn, dbi, fastkey, fastval);
+    Threads.@threads for i in 1:Threads.nthreads()
+        @btime write(env) do txn, dbi
+            put!(txn, dbi, fastkey, randvals[$i]);
+        end
     end
+
     @info "Benchmarking read(::Environment) ..."
-    @btime read(env) do txn, dbi
-        load!(txn, dbi, fastkey, fastval);
+    Threads.@threads for _ in 1:Threads.nthreads()
+        @btime read(env) do txn, dbi
+            load!(txn, dbi, fastkey, fastval);
+        end
     end
-    n = length(sorted_keys)
+
     @info "Benchmarking foreach(::Environment, ::MDBValue, ::MDBValue) ($(length(env)) entries) ..."
-    @btime foreach(env, fastkey, fastval) do _
-        return nothing
+    Threads.@threads for _ in 1:Threads.nthreads()    
+        @btime foreach(env, fastkey, fastval) do _
+            return nothing
+        end
     end
 end
