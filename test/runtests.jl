@@ -17,7 +17,7 @@ env = LMDB.Environment(TEST_DIR)
 @test !isopen(env)
 @test !close(env) # nothing bad should happen
 
-env = LMDB.Environment(TEST_DIR)
+env = LMDB.Environment(TEST_DIR, maxdbs=Cuint(1))
 
 struct Immutable
     a::Int
@@ -44,7 +44,7 @@ fastval = LMDB.MDBValue("fastval")
 
 
 # Open up default database as a Dict
-d = PersistentDict{Any,Any}(env)
+d = PersistentDict{Any,Any}(env, dbname="foo")
 
 d["stringkey"] = "stringval"
 d["byteskey"] = Vector{UInt8}("bytesval")

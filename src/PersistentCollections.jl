@@ -46,7 +46,7 @@ module PersistentCollections
         try
             lock(d.env.wlock) # need this lock otherwise it will deadlock
             txn = LMDB.mdb_txn_begin(d.env.handle, d.txnflags)
-            dbi = LMDB.mdb_dbi_open(txn, d.dbname, d.dbiflags)
+            dbi = LMDB.mdb_dbi_open(txn, d.dbname, isempty(d.dbname) ? d.dbiflags : d.dbiflags | LMDB.MDB_CREATE)
             mdbkey, mdbval = convert(LMDB.MDBValue, key), convert(LMDB.MDBValue, val)
             GC.@preserve mdbkey mdbval LMDB.mdb_put(txn, dbi, pointer(mdbkey), pointer(mdbval), flags)
             LMDB.mdb_txn_commit(txn)

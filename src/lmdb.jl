@@ -9,6 +9,9 @@ const MDB_NOSUBDIR = Cuint(0x4000)
 const MDB_RDONLY = Cuint(0x20000)
 const MDB_NOTLS = Cuint(0x200000)
 
+# DBI flags
+const MDB_CREATE = Cuint(0x40000)
+
 # Cursor operation constants (TODO: define more)
 @enum MDBCursorOp::Cint begin
     MDB_FIRST
@@ -232,7 +235,7 @@ end
 
 const OPENED_ENVS = Dict{String,Environment}()
 
-function Environment(path::String; flags::Cuint=zero(Cuint), mode::LMDB.Cmode_t = 0o755, maxdbs::Cuint = zero(Cuint), mapsize::Csize_t = Csize_t(10485760),
+function Environment(path::String; flags::Cuint=zero(Cuint), mode::LMDB.Cmode_t=0o755, maxdbs::Cuint=Cuint(0), mapsize::Csize_t=Csize_t(10485760),
                                    maxreaders::Cuint = Cuint(126), rotxnflags::Cuint = LMDB.DEFAULT_RO_FLAGS)
     env = get(OPENED_ENVS, path, nothing)
     if isnothing(env)
