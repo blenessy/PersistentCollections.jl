@@ -6,13 +6,8 @@ module PersistentCollections
     abstract type PersistentAbstractDict{K,V} <: AbstractDict{K,V} end
     struct PersistentDict{K,V} <: PersistentAbstractDict{K,V}
         env::LMDB.Environment
-        dbname::String
-        txnflags::Cuint
-        dbiflags::Cuint
-        function PersistentDict{K,V}(env; dbname="", txnflags::Cuint=zero(Cuint), dbiflags::Cuint=zero(Cuint)) where {K,V}
-            mdbvals = [LMDB.MDBValue() for _ in 1:Threads.nthreads()]
-            return new{K,V}(env, dbname, txnflags, dbiflags)
-        end
+        id::String
+        PersistentDict{K,V}(env; id="") where {K,V} = new{K,V}(env, id)
     end
 
     function Base.get(d::PersistentDict{K,V}, key::K, default::D) where {K,V,D}
@@ -20,7 +15,7 @@ module PersistentCollections
         txn = d.env.rotxn[Threads.threadid()]
         LMDB.mdb_txn_renew(txn)
         try
-            dbi = LMDB.mdb_dbi_open(txn, d.dbname, d.dbiflags)
+            dbi = LMDB.mdb_dbi_open(txn, d.id, zero(Cuint))
             @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
             mdbkey, mdbval = convert(LMDB.MDBValue, key), LMDB.MDBValue()
             found = GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, pointer(mdbkey), pointer(mdbval))
@@ -40,15 +35,15 @@ module PersistentCollections
         throw(KeyError(key))
     end
 
-    function Base.setindex!(d::PersistentDict{K,V}, val::V, key::K; flags::Cuint=zero(Cuint)) where {K,V}
+    function Base.setindex!(d::PersistentDict{K,V}, val::V, key::K; sync=true) where {K,V}
         isopen(d.env) || error("Environment is closed")
         txn, committed = C_NULL, false
         try
             lock(d.env.wlock) # need this lock otherwise it will deadlock
-            txn = LMDB.mdb_txn_begin(d.env.handle, d.txnflags)
-            dbi = LMDB.mdb_dbi_open(txn, d.dbname, isempty(d.dbname) ? d.dbiflags : d.dbiflags | LMDB.MDB_CREATE)
+            txn = LMDB.mdb_txn_begin(d.env.handle, sync ? zero(Cuint) : LMDB.MDB_NOSYNC)
+            dbi = LMDB.mdb_dbi_open(txn, d.id, LMDB.MDB_CREATE)
             mdbkey, mdbval = convert(LMDB.MDBValue, key), convert(LMDB.MDBValue, val)
-            GC.@preserve mdbkey mdbval LMDB.mdb_put(txn, dbi, pointer(mdbkey), pointer(mdbval), flags)
+            GC.@preserve mdbkey mdbval LMDB.mdb_put(txn, dbi, pointer(mdbkey), pointer(mdbval), zero(Cuint))
             LMDB.mdb_txn_commit(txn)
             committed = true
         finally
@@ -63,8 +58,8 @@ module PersistentCollections
         txn, committed = C_NULL, false
         try
             lock(d.env.wlock) # need this lock otherwise it will deadlock
-            txn = LMDB.mdb_txn_begin(d.env.handle, d.txnflags)
-            dbi = LMDB.mdb_dbi_open(txn, d.dbname, d.dbiflags)
+            txn = LMDB.mdb_txn_begin(d.env.handle, zero(Cuint))
+            dbi = LMDB.mdb_dbi_open(txn, d.id, zero(Cuint))
             mdbkey = convert(LMDB.MDBValue, key)
             if GC.@preserve mdbkey LMDB.mdb_del(txn, dbi, pointer(mdbkey), C_NULL)            
                 LMDB.mdb_txn_commit(txn)
@@ -90,10 +85,10 @@ module PersistentCollections
 
     function create_atomic_cursor(dict::PersistentDict)
         isopen(dict.env) || error("Environment is closed")
-        txn = LMDB.mdb_txn_begin(dict.env.handle, (LMDB.MDB_RDONLY | LMDB.MDB_NOTLS))
+        txn = LMDB.mdb_txn_begin(dict.env.handle, LMDB.DEFAULT_ROTXN_FLAGS)
         cur = C_NULL
         try
-            dbi = LMDB.mdb_dbi_open(txn, dict.dbname, dict.dbiflags)
+            dbi = LMDB.mdb_dbi_open(txn, dict.id, zero(Cuint))
             cur = LMDB.mdb_cursor_open(txn, dbi)
         catch e
             LMDB.mdb_txn_abort(txn)

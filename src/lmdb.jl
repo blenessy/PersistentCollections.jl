@@ -6,6 +6,7 @@ const MDB_NOTFOUND = Cint(-30798)
 
 # Environment flags (TODO: define more)
 const MDB_NOSUBDIR = Cuint(0x4000)
+const MDB_NOSYNC = Cuint(0x10000)
 const MDB_RDONLY = Cuint(0x20000)
 const MDB_NOTLS = Cuint(0x200000)
 
@@ -36,7 +37,7 @@ const MDB_CREATE = Cuint(0x40000)
 end
 
 # Common flag combo
-const DEFAULT_RO_FLAGS = LMDB.MDB_RDONLY | LMDB.MDB_NOTLS
+const DEFAULT_ROTXN_FLAGS = MDB_RDONLY | MDB_NOTLS
 
 const Cmode_t = Cushort
 
@@ -181,6 +182,12 @@ function mdb_env_set_maxdbs(env::Ptr{Cvoid}, dbs::Cuint)
     return nothing
 end
 
+function mdb_env_sync(env::Ptr{Cvoid}, force::Cint)
+    @chkres ccall((:mdb_env_sync, liblmdb), Cint, (Ptr{Cvoid}, Cint), env, force)
+    return nothing
+end
+
+
 function mdb_put(txn::Ptr{Cvoid}, dbi::Cuint, key::Ptr{Cvoid}, val::Ptr{Cvoid}, flags::Cuint)
     @chkres ccall((:mdb_put, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{Cvoid}, Ptr{Cvoid}, Cuint), txn, dbi, key, val, flags)
     return nothing
@@ -228,22 +235,20 @@ end
 mutable struct Environment
     handle::Ptr{Cvoid}
     path::String
-    maxdbs::Cuint
     rotxn::Vector{Ptr{Cvoid}}
     wlock::ReentrantLock
 end
 
 const OPENED_ENVS = Dict{String,Environment}()
 
-function Environment(path::String; flags::Cuint=zero(Cuint), mode::LMDB.Cmode_t=0o755, maxdbs::Cuint=Cuint(0), mapsize::Csize_t=Csize_t(10485760),
-                                   maxreaders::Cuint = Cuint(126), rotxnflags::Cuint = LMDB.DEFAULT_RO_FLAGS)
+function Environment(path::String; flags::Cuint=zero(Cuint), mode::Cmode_t=0o755, maxdbs=0, mapsize=10485760, maxreaders=126, rotxnflags::Cuint=DEFAULT_ROTXN_FLAGS)
     env = get(OPENED_ENVS, path, nothing)
     if isnothing(env)
         rotxn = [C_NULL for i in 1:Threads.nthreads()]
-        env = Environment(mdb_env_create(), path, maxdbs, rotxn, ReentrantLock())
-        mdb_env_set_maxdbs(env.handle, maxdbs)
-        mdb_env_set_mapsize(env.handle, mapsize)
-        mdb_env_set_maxreaders(env.handle, maxreaders)
+        env = Environment(mdb_env_create(), path, rotxn, ReentrantLock())
+        mdb_env_set_maxdbs(env.handle, convert(Cuint, maxdbs))
+        mdb_env_set_mapsize(env.handle,  convert(Csize_t, mapsize))
+        mdb_env_set_maxreaders(env.handle, convert(Cuint, maxreaders))
         try
             mdb_env_open(env.handle, path, flags, mode)
         catch e
@@ -278,6 +283,13 @@ function Base.close(env::Environment)
     return false
 end
 
+function Base.flush(func::Function, env::Environment)
+    try
+        func()
+    finally
+        mdb_env_sync(env.handle, one(Cint))
+    end
+end
 
 function __init__()
     @info mdb_version()

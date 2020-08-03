@@ -37,9 +37,9 @@ make bench
 
 - [x] Optimised implementation
 - [x] Thread Safe
-- [ ] MDB_NOSYNC support
+- [x] MDB_NOSYNC support
 - [x] Named database support
-- [ ] Manual flush (sync) to disk
+- [x] Manual flush (sync) to disk
 
 ### PersistentSet
 
