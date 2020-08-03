@@ -1,2 +1,49 @@
 # PersistentCollections.jl
-Julia AbstractDict and AbstractSet data structures persisted (ACID) to disk
+
+Julia AbstractDict and AbstractSet data structures persisted (ACID) to disk.
+
+## Quick Start
+
+TODO
+
+## Running Tests
+
+```julia
+JULIA_NUM_THREADS=999999 julia -e 'import Pkg; Pkg.activate("."); Pkg.test()'
+```
+
+## Benchmarks
+
+```julia
+BENCH=1 julia -e 'import Pkg; Pkg.activate("."); Pkg.test()'
+```
+
+## Status
+
+### CI/CD
+
+- [ ] Travis CI integration
+- [ ] Code Coverage integration
+- [ ] All platforms supported
+- [ ] Part of Julia Registry
+
+### PersistentDict
+
+- [x] Optimised implementation
+- [x] Thread Safe
+- [ ] MDB_NOSYNC support
+- [ ] Named database support
+- [ ] Manual flush (sync) to disk
+
+### PersistentSet
+
+- [ ] Implemented
+- [ ] Thread Safe
+- [ ] MDB_NOSYNC support
+- [ ] Named database support
+- [ ] Manual flush (sync) to disk
+
+## Credits
+
+Lots of LMDB wrapping magic was pinched from [wildart/LMDB.jl](https://github.com/wildart/LMDB.jl) - who deserves lots of credits.
+

@@ -92,10 +92,7 @@ if Threads.nthreads() > 1
     writes = [zero(Int) for _ in 1:Threads.nthreads()]
     Threads.@threads for i in 1:Threads.nthreads()
         while time() < deadline
-            write(env) do txn, dbi
-                put!(txn, dbi, fastkey, randvals[i])
-                writes[i] += 1
-            end
+            d[fastkey] = randvals[i]
         end
     end
     @info "... $(sum(writes)) writes completed!"
@@ -105,7 +102,7 @@ end
 
 # == Benchmarks ==
 
-if get(ENV, "BENCH", "") == "true"
+if get(ENV, "BENCH", "") == "y"
     longkey = "012345678901234567890123456789012345678901234567890123456789"
 
     @info "Benchmarking setindex!(::PersistentDict) ..."
