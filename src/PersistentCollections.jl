@@ -224,6 +224,60 @@ module PersistentCollections
             return statref[]
         end
 
+        mutable struct Environment
+            handle::Ptr{Cvoid}
+            path::String
+            maxdbs::Cuint
+            rotxn::Vector{Ptr{Cvoid}}
+            wlock::ReentrantLock
+        end
+    
+        const OPENED_ENVS = Dict{String,Environment}()
+    
+        function Environment(path::String; flags::Cuint=zero(Cuint), mode::LMDB.Cmode_t = 0o755, maxdbs::Cuint = zero(Cuint), mapsize::Csize_t = Csize_t(10485760),
+                                           maxreaders::Cuint = Cuint(126), rotxnflags::Cuint = LMDB.DEFAULT_RO_FLAGS)
+            env = get(OPENED_ENVS, path, nothing)
+            if isnothing(env)
+                rotxn = [C_NULL for i in 1:Threads.nthreads()]
+                env = Environment(mdb_env_create(), path, maxdbs, rotxn, ReentrantLock())
+                mdb_env_set_maxdbs(env.handle, maxdbs)
+                mdb_env_set_mapsize(env.handle, mapsize)
+                mdb_env_set_maxreaders(env.handle, maxreaders)
+                try
+                    mdb_env_open(env.handle, path, flags, mode)
+                catch e
+                    mdb_env_close(env.handle)
+                    rethrow(e)
+                end
+                OPENED_ENVS[path] = env
+                # create read-only transaction handles, which can be used quickly (mdb_txn_renew/mdb_txn_reset use-case)
+                for i in 1:Threads.nthreads()
+                    env.rotxn[i] = mdb_txn_begin(env.handle, rotxnflags)
+                    mdb_txn_reset(env.rotxn[i])
+                end
+                # register finalizer for lazy cleanup
+                finalizer(close, env)
+            end
+            return env
+        end
+    
+        Base.isopen(env::Environment) = env.handle != C_NULL
+    
+        function Base.close(env::Environment)
+            if isopen(env)
+                for handle in env.rotxn
+                    handle == C_NULL || mdb_txn_abort(handle)
+                end
+                @assert get(OPENED_ENVS, env.path, nothing) == env "OPENED_ENVS does not contain env for $(path) - smells like threading issue ..."
+                mdb_env_close(env.handle)
+                env.handle = C_NULL
+                delete!(OPENED_ENVS, env.path)
+                return true
+            end
+            return false
+        end
+
+
         function __init__()
             @info mdb_version()
             # this will catch changes in struct layout
@@ -231,175 +285,78 @@ module PersistentCollections
         end
     end
 
-    mutable struct Environment
-        handle::Ptr{Cvoid}
-        path::String
-        maxdbs::Cuint
-        rotxn::Vector{Ptr{Cvoid}}
-        wlock::ReentrantLock
-    end
-
-    const OPENED_ENVS = Dict{String,Environment}()
-
-    function Environment(path::String; flags::Cuint=zero(Cuint), mode::LMDB.Cmode_t = 0o755, maxdbs::Cuint = zero(Cuint), mapsize::Csize_t = Csize_t(10485760),
-                                       maxreaders::Cuint = Cuint(126), rotxnflags::Cuint = LMDB.DEFAULT_RO_FLAGS)
-        env = get(OPENED_ENVS, path, nothing)
-        if isnothing(env)
-            rotxn = [C_NULL for i in 1:Threads.nthreads()]
-            env = Environment(LMDB.mdb_env_create(), path, maxdbs, rotxn, ReentrantLock())
-            LMDB.mdb_env_set_maxdbs(env.handle, maxdbs)
-            LMDB.mdb_env_set_mapsize(env.handle, mapsize)
-            LMDB.mdb_env_set_maxreaders(env.handle, maxreaders)
-            try
-                LMDB.mdb_env_open(env.handle, path, flags, mode)
-            catch e
-                LMDB.mdb_env_close(env.handle)
-                rethrow(e)
-            end
-            OPENED_ENVS[path] = env
-            # create read-only transaction handles, which can be used quickly (mdb_txn_renew/mdb_txn_reset use-case)
-            for i in 1:Threads.nthreads()
-                env.rotxn[i] = LMDB.mdb_txn_begin(env.handle, rotxnflags)
-                LMDB.mdb_txn_reset(env.rotxn[i])
-            end
-            # register finalizer for lazy cleanup
-            finalizer(close, env)
-        end
-        return env
-    end
-
-    Base.isopen(env::Environment) = env.handle != C_NULL
-
-    function Base.close(env::Environment)
-        if isopen(env)
-            for handle in env.rotxn
-                handle == C_NULL || LMDB.mdb_txn_abort(handle)
-            end
-            @assert get(OPENED_ENVS, env.path, nothing) == env "OPENED_ENVS does not contain env for $(path) - smells like threading issue ..."
-            LMDB.mdb_env_close(env.handle)
-            env.handle = C_NULL
-            delete!(OPENED_ENVS, env.path)
-            return true
-        end
-        return false
-    end
-
-    function Base.write(func::Function, env::Environment; dbname="", txnflags::Cuint=zero(Cuint), dbiflags::Cuint=zero(Cuint))
-        isopen(env) || error("Environment is closed")
-        txn, committed = C_NULL, false
-        try
-            lock(env.wlock) # need this lock otherwise it will deadlock
-            txn = LMDB.mdb_txn_begin(env.handle, txnflags)
-            dbi = LMDB.mdb_dbi_open(txn, dbname, dbiflags)
-            func(txn, dbi)
-            LMDB.mdb_txn_commit(txn)
-            committed = true
-        finally
-            (committed || txn == C_NULL) || LMDB.mdb_txn_abort(txn)
-            unlock(env.wlock)
+    abstract type PersistentAbstractDict{K,V} <: AbstractDict{K,V} end
+    struct PersistentDict{K,V} <: PersistentAbstractDict{K,V}
+        env::LMDB.Environment
+        dbname::String
+        txnflags::Cuint
+        dbiflags::Cuint
+        function PersistentDict{K,V}(env; dbname="", txnflags::Cuint=zero(Cuint), dbiflags::Cuint=zero(Cuint)) where {K,V}
+            mdbvals = [LMDB.MDBValue() for _ in 1:Threads.nthreads()]
+            return new{K,V}(env, dbname, txnflags, dbiflags)
         end
     end
 
-    function Base.read(func::Function, env::Environment; dbname="", dbiflags::Cuint=zero(Cuint))
-        isopen(env) || error("Environment is closed")
-        txn = env.rotxn[Threads.threadid()]
+    function Base.get(d::PersistentDict{K,V}, key::K, default::D) where {K,V,D}
+        isopen(d.env) || error("Environment is closed")
+        txn = d.env.rotxn[Threads.threadid()]
         LMDB.mdb_txn_renew(txn)
         try
-            dbi = LMDB.mdb_dbi_open(txn, dbname, dbiflags)
-            return func(txn, dbi)
+            dbi = LMDB.mdb_dbi_open(txn, d.dbname, d.dbiflags)
+            @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
+            mdbkey, mdbval = convert(LMDB.MDBValue, key), LMDB.MDBValue()
+            found = GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, pointer(mdbkey), pointer(mdbval))
+            found || return default
+            # try converting if possible
+            V == Any || return convert(V, mdbval)
+            D == Nothing || return convert(D, mdbval)
+            return mdbval # return unconverted
         finally
             LMDB.mdb_txn_reset(txn)
         end
     end
 
-    function Base.foreach(func::Function, env::Environment; dbname="", txnflags=LMDB.DEFAULT_RO_FLAGS, dbiflags::Cuint=zero(Cuint), op::LMDB.MDBCursorOp=LMDB.MDB_NEXT)
-        isopen(env) || error("Environment is closed")
-        txn = LMDB.mdb_txn_begin(env.handle, (LMDB.MDB_RDONLY | LMDB.MDB_NOTLS))
-        cur = C_NULL
+    function Base.getindex(d::PersistentDict{K,V}, key::K) where {K,V}
+        val = get(d, key, nothing)
+        isnothing(val) || return val
+        throw(KeyError(key))
+    end
+
+    function Base.setindex!(d::PersistentDict{K,V}, val::V, key::K; flags::Cuint=zero(Cuint)) where {K,V}
+        isopen(d.env) || error("Environment is closed")
+        txn, committed = C_NULL, false
         try
-            dbi = LMDB.mdb_dbi_open(txn, dbname, dbiflags)
-            cur = LMDB.mdb_cursor_open(txn, dbi)
-            i = one(Int)
-            key, val = LMDB.MDBValue(), LMDB.MDBValue()
-            pkey, pval = pointer(key), pointer(val)
-            while LMDB.mdb_cursor_get!(cur, pkey, pval, op)
-                nextop = func(key, val)
-                if nextop isa LMDB.MDBCursorOp
-                    op = nextop
-                end
-                i += 1
+            lock(d.env.wlock) # need this lock otherwise it will deadlock
+            txn = LMDB.mdb_txn_begin(d.env.handle, d.txnflags)
+            dbi = LMDB.mdb_dbi_open(txn, d.dbname, d.dbiflags)
+            mdbkey, mdbval = convert(LMDB.MDBValue, key), convert(LMDB.MDBValue, val)
+            GC.@preserve mdbkey mdbval LMDB.mdb_put(txn, dbi, pointer(mdbkey), pointer(mdbval), flags)
+            LMDB.mdb_txn_commit(txn)
+            committed = true
+        finally
+            (committed || txn == C_NULL) || LMDB.mdb_txn_abort(txn)
+            unlock(d.env.wlock)
+        end
+        return val
+    end
+
+    function Base.delete!(d::PersistentDict{K,V}, key::K) where {K,V,D}
+        isopen(d.env) || error("Environment is closed")
+        txn, committed = C_NULL, false
+        try
+            lock(d.env.wlock) # need this lock otherwise it will deadlock
+            txn = LMDB.mdb_txn_begin(d.env.handle, d.txnflags)
+            dbi = LMDB.mdb_dbi_open(txn, d.dbname, d.dbiflags)
+            mdbkey = convert(LMDB.MDBValue, key)
+            if GC.@preserve mdbkey LMDB.mdb_del(txn, dbi, pointer(mdbkey), C_NULL)            
+                LMDB.mdb_txn_commit(txn)
+                committed = true
             end
         finally
-            cur == C_NULL || LMDB.mdb_cursor_close(cur)
-            LMDB.mdb_txn_abort(txn)
+            (committed || txn == C_NULL) || LMDB.mdb_txn_abort(txn)
+            unlock(d.env.wlock)
         end
-        return nothing
-    end
-
-    function Base.length(env::Environment)
-        isopen(env) || error("Environment is closed")
-        return convert(Int, LMDB.mdb_env_stat(env.handle).ms_entries)
-    end
-
-    function Base.put!(txn::Ptr{Cvoid}, dbi::Cuint, key, val; flags=zero(Cuint))
-        @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
-        mdbkey = convert(LMDB.MDBValue, key)
-        mdbval = convert(LMDB.MDBValue, val)
-        GC.@preserve mdbkey mdbval LMDB.mdb_put(txn, dbi, pointer(mdbkey), pointer(mdbval), flags)
-        return nothing
-    end
-
-    function Base.delete!(txn::Ptr{Cvoid}, dbi::Cuint, key)
-        @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
-        mdbkey = convert(LMDB.MDBValue, key)
-        return GC.@preserve mdbkey LMDB.mdb_del(txn, dbi, pointer(mdbkey), C_NULL)
-    end
-
-    function Base.get(txn::Ptr{Cvoid}, dbi::Cuint, key, default::V) where {V}
-        mdbval = LMDB.MDBValue()
-        loaded = load!(txn, dbi, key, mdbval)
-        return loaded ? convert(V, mdbval) : default
-    end
-
-    function load!(txn::Ptr{Cvoid}, dbi::Cuint, key, output::LMDB.MDBValue)
-        @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
-        mdbkey = convert(LMDB.MDBValue, key)
-        found = GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, pointer(mdbkey), pointer(output))
-        return found
-    end
-
-    abstract type PersistentAbstractDict{K,V} <: AbstractDict{K,V} end
-
-    struct PersistentDict{K,V} <: PersistentAbstractDict{K,V}
-        env::Environment
-        dbname::String
-        dbiflags::Cuint
-        mdbvals::Vector{LMDB.MDBValue}
-        function PersistentDict{K,V}(env; dbname="", dbiflags::Cuint=zero(Cuint)) where {K,V}
-            mdbvals = [LMDB.MDBValue() for _ in 1:Threads.nthreads()]
-            return new{K,V}(env, dbname, dbiflags, mdbvals)
-        end
-    end
-
-    function Base.get(d::PersistentDict{K,V}, key::K, default::D) where {K,V,D}
-        return read(d.env) do txn, dbi
-            mdbval = d.mdbvals[Threads.threadid()]
-            return load!(txn, dbi, key, mdbval) ? convert(D, mdbval) : default
-        end
-    end
-
-    function Base.getindex(d::PersistentDict{K,V}, key::K) where {K,V}
-        return read(d.env) do txn, dbi
-            mdbval = d.mdbvals[Threads.threadid()]
-            load!(txn, dbi, key, mdbval) || throw(KeyError(key))
-            return convert(V, mdbval)
-        end
-    end
-    function Base.setindex!(d::PersistentDict{K,V}, key::K, val::V) where {K,V}
-        return write(d.env) do txn, dbi
-            put!(txn, dbi, key, val)
-            return val
-        end
+        return committed
     end
 
     abstract type AbstractMDBCursor end
@@ -413,7 +370,7 @@ module PersistentCollections
         cur::Threads.Atomic{UInt}
     end
 
-    function create_mdbcursor(dict::PersistentDict{K,V}, ::Type{T}) where {T<:AbstractMDBCursor,K,V}
+    function create_atomic_cursor(dict::PersistentDict)
         isopen(dict.env) || error("Environment is closed")
         txn = LMDB.mdb_txn_begin(dict.env.handle, (LMDB.MDB_RDONLY | LMDB.MDB_NOTLS))
         cur = C_NULL
@@ -424,15 +381,15 @@ module PersistentCollections
             LMDB.mdb_txn_abort(txn)
             rethrow(e)
         end
-        mdbcur = T{K,V}(Threads.Atomic{UInt}(convert(UInt, cur)))
-        finalizer(close, mdbcur)
-        return mdbcur
+        atomic = Threads.Atomic{UInt}(convert(UInt, cur))
+        finalizer(close_atomic_cursor, atomic)
+        return atomic
     end
 
-    function Base.close(iter::AbstractMDBCursor)
+    function close_atomic_cursor(atomic_cursor::Threads.Atomic{UInt})
         # Make sure that two threads do not close the same handles
         # by using Atomic exchange operation
-        cur = convert(Ptr{Cvoid}, Threads.atomic_xchg!(iter.cur, convert(UInt, C_NULL)))
+        cur = convert(Ptr{Cvoid}, Threads.atomic_xchg!(atomic_cursor, convert(UInt, C_NULL)))
         if cur != C_NULL
             txn = LMDB.mdb_cursor_txn(cur)
             LMDB.mdb_cursor_close(cur)
@@ -440,6 +397,8 @@ module PersistentCollections
         end
         return nothing
     end
+   
+    Base.close(iter::AbstractMDBCursor) = close_atomic_cursor(iter.cur)
 
     # multi-threading might introduce race-condition where wrong length is reported
     Base.IteratorSize(d::PersistentDict) = Base.SizeUnknown()
@@ -473,13 +432,13 @@ module PersistentCollections
     function Base.iterate(d::PersistentDict{K,V}, iter=nothing) where {K,V}
         op = isnothing(iter) ? LMDB.MDB_FIRST : LMDB.MDB_NEXT
         if isnothing(iter)
-            iter = create_mdbcursor(d, MDBPairCursor)
+            iter = MDBPairCursor{K,V}(create_atomic_cursor(d))
         end
         next = iterate(iter, op)
         return isnothing(next) ? nothing : (next[1], iter)
     end
 
-    Base.keys(d::PersistentDict{K,V}) where {K,V} = create_mdbcursor(d, MDBKeyCursor)
-    Base.values(d::PersistentDict{K,V}) where {K,V} = create_mdbcursor(d, MDBValCursor)
+    Base.keys(d::PersistentDict{K,V}) where {K,V} = MDBKeyCursor{K,V}(create_atomic_cursor(d))
+    Base.values(d::PersistentDict{K,V}) where {K,V} = MDBValCursor{K,V}(create_atomic_cursor(d))
 
 end # module
