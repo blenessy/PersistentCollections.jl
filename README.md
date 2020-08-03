@@ -9,13 +9,19 @@ TODO
 ## Running Tests
 
 ```julia
-JULIA_NUM_THREADS=999999 julia -e 'import Pkg; Pkg.activate("."); Pkg.test()'
+make test
+```
+
+### Analyzing Code Coverage
+
+```julia
+make coverage
 ```
 
 ## Benchmarks
 
 ```julia
-BENCH=1 julia -e 'import Pkg; Pkg.activate("."); Pkg.test()'
+make bench
 ```
 
 ## Status

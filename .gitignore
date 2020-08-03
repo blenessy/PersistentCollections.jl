@@ -1,2 +1,5 @@
 *.lmdb
 *.lmdb-lock
+*.cov
+*.mem
+test/coverage/

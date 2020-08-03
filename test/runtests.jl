@@ -82,6 +82,7 @@ notfound = UInt8[0x1]
 @test convert(Int, d["intkey"]) == 1234
 @test length(collect(keys(d))) > 0
 @test length(collect(values(d))) == length(collect(keys(d)))
+@test !isempty(collect(d))
 @test (d["dictkey"] = "dictval") == "dictval"
 
 # multi-threading - don't crash or deadlock while re-writing key/val
