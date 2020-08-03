@@ -55,6 +55,7 @@ module PersistentCollections
             ptr::Ptr{Cvoid}  # address of the data item
             data::T
             MDBValue() = new{Nothing}(zero(Csize_t), C_NULL)
+            MDBValue{T}() where {T} = new{T}(zero(Csize_t), C_NULL)
             MDBValue(v::String) = new{String}(sizeof(v), pointer(v), v)
             MDBValue(v::Array) = new{Array}(sizeof(v), pointer(v), v)
             function MDBValue(v::T) where {T}
@@ -83,6 +84,8 @@ module PersistentCollections
         Base.convert(::Type{Array{T,N}}, val::MDBValue{Nothing}) where {T,N} = unsafe_wrap(Array, convert(Ptr{T}, val.ptr), val.size)
         Base.convert(::Type{T}, val::MDBValue{Nothing}) where {T} = unsafe_load(convert(Ptr{T}, val.ptr))
         Base.convert(::Type{Any}, val::MDBValue{Nothing}) = val
+        Base.convert(::Type{MDBValue}, val::MDBValue{Nothing}) = val
+        Base.convert(::Type{MDBValue{Nothing}}, val::MDBValue{Nothing}) = val
 
         # T -> MDBValue (input)
         Base.convert(::Type{MDBValue}, val::MDBValue) = val
@@ -205,6 +208,10 @@ module PersistentCollections
             return nothing
         end
 
+        function mdb_cursor_txn(cur::Ptr{Cvoid})
+            return ccall((:mdb_cursor_txn, liblmdb), Ptr{Cvoid}, (Ptr{Cvoid},), cur)
+        end
+
         function mdb_cursor_get!(cur::Ptr{Cvoid}, key::Ptr{Cvoid}, val::Ptr{Cvoid}, op::MDBCursorOp)
             res = ccall((:mdb_cursor_get, liblmdb), Cint, (Ptr{Cvoid}, Ptr{Cvoid}, Ptr{Cvoid}, Cint), cur, key, val, op)
             (res == MDB_SUCCESS || res == MDB_NOTFOUND) || throw(LMDBError(res))
@@ -280,8 +287,8 @@ module PersistentCollections
     function Base.write(func::Function, env::Environment; dbname="", txnflags::Cuint=zero(Cuint), dbiflags::Cuint=zero(Cuint))
         isopen(env) || error("Environment is closed")
         txn, committed = C_NULL, false
-        lock(env.wlock)
         try
+            lock(env.wlock) # need this lock otherwise it will deadlock
             txn = LMDB.mdb_txn_begin(env.handle, txnflags)
             dbi = LMDB.mdb_dbi_open(txn, dbname, dbiflags)
             func(txn, dbi)
@@ -293,25 +300,19 @@ module PersistentCollections
         end
     end
 
-    mutable struct Transaction
-        txn::Ptr{Cvoid}
-        dbi::Cuint
-    end
-
     function Base.read(func::Function, env::Environment; dbname="", dbiflags::Cuint=zero(Cuint))
         isopen(env) || error("Environment is closed")
         txn = env.rotxn[Threads.threadid()]
         LMDB.mdb_txn_renew(txn)
         try
             dbi = LMDB.mdb_dbi_open(txn, dbname, dbiflags)
-            func(txn, dbi)
+            return func(txn, dbi)
         finally
             LMDB.mdb_txn_reset(txn)
         end
     end
 
-    function Base.foreach(func::Function, env::Environment, key::LMDB.MDBValue, val::LMDB.MDBValue;
-            dbname="", txnflags=LMDB.DEFAULT_RO_FLAGS, dbiflags::Cuint=zero(Cuint), op::LMDB.MDBCursorOp=LMDB.MDB_NEXT)
+    function Base.foreach(func::Function, env::Environment; dbname="", txnflags=LMDB.DEFAULT_RO_FLAGS, dbiflags::Cuint=zero(Cuint), op::LMDB.MDBCursorOp=LMDB.MDB_NEXT)
         isopen(env) || error("Environment is closed")
         txn = LMDB.mdb_txn_begin(env.handle, (LMDB.MDB_RDONLY | LMDB.MDB_NOTLS))
         cur = C_NULL
@@ -319,9 +320,10 @@ module PersistentCollections
             dbi = LMDB.mdb_dbi_open(txn, dbname, dbiflags)
             cur = LMDB.mdb_cursor_open(txn, dbi)
             i = one(Int)
+            key, val = LMDB.MDBValue(), LMDB.MDBValue()
             pkey, pval = pointer(key), pointer(val)
             while LMDB.mdb_cursor_get!(cur, pkey, pval, op)
-                nextop = func(i)
+                nextop = func(key, val)
                 if nextop isa LMDB.MDBCursorOp
                     op = nextop
                 end
@@ -331,6 +333,7 @@ module PersistentCollections
             cur == C_NULL || LMDB.mdb_cursor_close(cur)
             LMDB.mdb_txn_abort(txn)
         end
+        return nothing
     end
 
     function Base.length(env::Environment)
@@ -364,5 +367,119 @@ module PersistentCollections
         found = GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, pointer(mdbkey), pointer(output))
         return found
     end
+
+    abstract type PersistentAbstractDict{K,V} <: AbstractDict{K,V} end
+
+    struct PersistentDict{K,V} <: PersistentAbstractDict{K,V}
+        env::Environment
+        dbname::String
+        dbiflags::Cuint
+        mdbvals::Vector{LMDB.MDBValue}
+        function PersistentDict{K,V}(env; dbname="", dbiflags::Cuint=zero(Cuint)) where {K,V}
+            mdbvals = [LMDB.MDBValue() for _ in 1:Threads.nthreads()]
+            return new{K,V}(env, dbname, dbiflags, mdbvals)
+        end
+    end
+
+    function Base.get(d::PersistentDict{K,V}, key::K, default::D) where {K,V,D}
+        return read(d.env) do txn, dbi
+            mdbval = d.mdbvals[Threads.threadid()]
+            return load!(txn, dbi, key, mdbval) ? convert(D, mdbval) : default
+        end
+    end
+
+    function Base.getindex(d::PersistentDict{K,V}, key::K) where {K,V}
+        return read(d.env) do txn, dbi
+            mdbval = d.mdbvals[Threads.threadid()]
+            load!(txn, dbi, key, mdbval) || throw(KeyError(key))
+            return convert(V, mdbval)
+        end
+    end
+    function Base.setindex!(d::PersistentDict{K,V}, key::K, val::V) where {K,V}
+        return write(d.env) do txn, dbi
+            put!(txn, dbi, key, val)
+            return val
+        end
+    end
+
+    abstract type AbstractMDBCursor end
+    mutable struct MDBPairCursor{K,V} <: AbstractMDBCursor
+        cur::Threads.Atomic{UInt}
+    end
+    mutable struct MDBKeyCursor{K,V} <: AbstractMDBCursor
+        cur::Threads.Atomic{UInt}
+    end
+    mutable struct MDBValCursor{K,V} <: AbstractMDBCursor
+        cur::Threads.Atomic{UInt}
+    end
+
+    function create_mdbcursor(dict::PersistentDict{K,V}, ::Type{T}) where {T<:AbstractMDBCursor,K,V}
+        isopen(dict.env) || error("Environment is closed")
+        txn = LMDB.mdb_txn_begin(dict.env.handle, (LMDB.MDB_RDONLY | LMDB.MDB_NOTLS))
+        cur = C_NULL
+        try
+            dbi = LMDB.mdb_dbi_open(txn, dict.dbname, dict.dbiflags)
+            cur = LMDB.mdb_cursor_open(txn, dbi)
+        catch e
+            LMDB.mdb_txn_abort(txn)
+            rethrow(e)
+        end
+        mdbcur = T{K,V}(Threads.Atomic{UInt}(convert(UInt, cur)))
+        finalizer(close, mdbcur)
+        return mdbcur
+    end
+
+    function Base.close(iter::AbstractMDBCursor)
+        # Make sure that two threads do not close the same handles
+        # by using Atomic exchange operation
+        cur = convert(Ptr{Cvoid}, Threads.atomic_xchg!(iter.cur, convert(UInt, C_NULL)))
+        if cur != C_NULL
+            txn = LMDB.mdb_cursor_txn(cur)
+            LMDB.mdb_cursor_close(cur)
+            LMDB.mdb_txn_abort(txn)
+        end
+        return nothing
+    end
+
+    # multi-threading might introduce race-condition where wrong length is reported
+    Base.IteratorSize(d::PersistentDict) = Base.SizeUnknown()
+    Base.IteratorSize(iter::AbstractMDBCursor) = Base.SizeUnknown()
+    Base.eltype(iter::MDBPairCursor{K,V}) where {K,V} = Pair{K,V}
+    Base.eltype(iter::MDBKeyCursor{K,V}) where {K,V} = K
+    Base.eltype(iter::MDBValCursor{K,V}) where {K,V} = V
+
+    function Base.iterate(iter::MDBPairCursor{K,V}, op=LMDB.MDB_FIRST) where {K,V}
+        mdbkey, mdbval = LMDB.MDBValue(), LMDB.MDBValue()
+        finished = !LMDB.mdb_cursor_get!(convert(Ptr{Cvoid}, iter.cur[]), pointer(mdbkey), pointer(mdbval), op)
+        finished || return (convert(K, mdbkey) => convert(V, mdbval), LMDB.MDB_NEXT)
+        close(iter)
+        return nothing
+    end
+    function Base.iterate(iter::MDBKeyCursor{K,V}, op=LMDB.MDB_FIRST) where {K,V}
+        mdbkey, mdbval = LMDB.MDBValue(), LMDB.MDBValue()
+        finished = !LMDB.mdb_cursor_get!(convert(Ptr{Cvoid}, iter.cur[]), pointer(mdbkey), pointer(mdbval), op)
+        finished || return (convert(K, mdbkey), LMDB.MDB_NEXT)
+        close(iter)
+        return nothing        
+    end
+    function Base.iterate(iter::MDBValCursor{K,V}, op=LMDB.MDB_FIRST) where {K,V}
+        mdbkey, mdbval = LMDB.MDBValue(), LMDB.MDBValue()
+        finished = !LMDB.mdb_cursor_get!(convert(Ptr{Cvoid}, iter.cur[]), pointer(mdbkey), pointer(mdbval), op)
+        finished || return (convert(V, mdbval), LMDB.MDB_NEXT)
+        close(iter)
+        return nothing        
+    end
+
+    function Base.iterate(d::PersistentDict{K,V}, iter=nothing) where {K,V}
+        op = isnothing(iter) ? LMDB.MDB_FIRST : LMDB.MDB_NEXT
+        if isnothing(iter)
+            iter = create_mdbcursor(d, MDBPairCursor)
+        end
+        next = iterate(iter, op)
+        return isnothing(next) ? nothing : (next[1], iter)
+    end
+
+    Base.keys(d::PersistentDict{K,V}) where {K,V} = create_mdbcursor(d, MDBKeyCursor)
+    Base.values(d::PersistentDict{K,V}) where {K,V} = create_mdbcursor(d, MDBValCursor)
 
 end # module
