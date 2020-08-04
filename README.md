@@ -28,7 +28,8 @@ make bench
 
 ### CI/CD
 
-- [ ] Travis CI integration
+- [x] Travis CI integration
+- [ ] Coveralls integration (when public)
 - [ ] All platforms supported
 - [ ] Part of Julia Registry
 

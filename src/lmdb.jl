@@ -45,13 +45,6 @@ macro fieldoffset(T, num)
     return :(fieldoffset($T, $(esc(num))))
 end
 
-# mutable struct MDBValue{T}
-#     size::Csize_t    # size of the data item
-#     ptr::Ptr{Cvoid}  # address of the data item
-#     ref::T           # keep a reference to the object we are pointing to
-#     MDBValue(size, ptr, ref::T) where {T} = new{T}(size, ptr, ref)
-# end
-
 mutable struct MDBValue{T}
     size::Csize_t    # size of the data item
     ptr::Ptr{Cvoid}  # address of the data item
