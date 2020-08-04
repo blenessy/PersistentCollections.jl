@@ -1,14 +1,17 @@
 module PersistentCollections
+    export LMDB, PersistentDict
+
     module LMDB
         include(joinpath(@__DIR__, "lmdb.jl"))
     end
 
-    abstract type PersistentAbstractDict{K,V} <: AbstractDict{K,V} end
-    struct PersistentDict{K,V} <: PersistentAbstractDict{K,V}
+    struct PersistentDict{K,V} <: AbstractDict{K,V}
         env::LMDB.Environment
         id::String
         PersistentDict{K,V}(env; id="") where {K,V} = new{K,V}(env, id)
     end
+
+    Base.show(io::IO, d::PersistentDict) = print(io, typeof(d), "(", isempty(d.id) ? "" : repr(e.id), ")")
 
     function Base.get(d::PersistentDict{K,V}, key::K, default::D) where {K,V,D}
         isopen(d.env) || error("Environment is closed")
@@ -16,7 +19,6 @@ module PersistentCollections
         LMDB.mdb_txn_renew(txn)
         try
             dbi = LMDB.mdb_dbi_open(txn, d.id, zero(Cuint))
-            @assert txn != C_NULL && !iszero(dbi) "txn and/or dbi handles are not initialized"
             mdbkey, mdbval = convert(LMDB.MDBValue, key), LMDB.MDBValue()
             found = GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, pointer(mdbkey), pointer(mdbval))
             found || return default
@@ -153,5 +155,17 @@ module PersistentCollections
 
     Base.keys(d::PersistentDict{K,V}) where {K,V} = MDBKeyCursor{K,V}(create_atomic_cursor(d))
     Base.values(d::PersistentDict{K,V}) where {K,V} = MDBValCursor{K,V}(create_atomic_cursor(d))
+
+    function Base.length(d::PersistentDict)
+        isopen(d.env) || error("Environment is closed")
+        txn = d.env.rotxn[Threads.threadid()]
+        LMDB.mdb_txn_renew(txn)
+        try
+            dbi = LMDB.mdb_dbi_open(txn, d.id, zero(Cuint))
+            return convert(Int, LMDB.mdb_stat(txn, dbi).ms_entries)
+        finally
+            LMDB.mdb_txn_reset(txn)
+        end
+    end
 
 end # module

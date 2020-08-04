@@ -225,6 +225,12 @@ function mdb_env_stat(env::Ptr{Cvoid})
     return statref[]
 end
 
+function mdb_stat(txn::Ptr{Cvoid}, dbi::Cuint)
+    statref = Ref(MDBStat())
+    @chkres ccall((:mdb_stat, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{MDBStat}), txn, dbi, statref)
+    return statref[]
+end
+
 mutable struct Environment
     handle::Ptr{Cvoid}
     path::String
@@ -237,6 +243,8 @@ const OPENED_ENVS = Dict{String,Environment}()
 function Environment(path::String; flags::Cuint=zero(Cuint), mode::Cmode_t=0o755, maxdbs=0, mapsize=10485760, maxreaders=126, rotxnflags::Cuint=DEFAULT_ROTXN_FLAGS)
     env = get(OPENED_ENVS, path, nothing)
     if isnothing(env)
+        # create all directories needed to host the data
+        mkpath(iszero(flags & MDB_NOSUBDIR) ? path : dirname(path), mode=mode)
         rotxn = [C_NULL for i in 1:Threads.nthreads()]
         env = Environment(mdb_env_create(), path, rotxn, ReentrantLock())
         mdb_env_set_maxdbs(env.handle, convert(Cuint, maxdbs))
@@ -260,6 +268,8 @@ function Environment(path::String; flags::Cuint=zero(Cuint), mode::Cmode_t=0o755
     return env
 end
 
+Base.show(io::IO, e::Environment) = print(io, typeof(e), "(", repr(e.path), ")")
+
 Base.isopen(env::Environment) = env.handle != C_NULL
 
 function Base.close(env::Environment)
@@ -276,6 +286,7 @@ function Base.close(env::Environment)
     return false
 end
 
+Base.flush(env::Environment) = mdb_env_sync(env.handle, one(Cint))
 function Base.flush(func::Function, env::Environment)
     try
         func()

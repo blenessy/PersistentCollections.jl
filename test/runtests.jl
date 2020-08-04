@@ -1,7 +1,7 @@
 using Test
 using BenchmarkTools
 
-using PersistentCollections: LMDB, PersistentDict
+using PersistentCollections
 
 const ENV_DIR = "env.lmdb"
 const UNSAFE_ENV_DIR = "unsafe_env.lmdb"
