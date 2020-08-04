@@ -24,4 +24,5 @@ matrix:
 script:
     - JULIA_DEBUG=PersistentCollections JULIA_NUM_THREADS=999999 julia --project --check-bounds=yes -e 'import Pkg; Pkg.activate("."); Pkg.test(coverage=true)'
 
-coveralls: true
+after_success:
+    - if [ "$TRAVIS_OS_NAME" = linux -a "$TRAVIS_CPU_ARCH" = amd64 -a "$TRAVIS_JULIA_VERSION" = 1.5 ]; then julia --project -e 'import Pkg; Pkg.add("Coverage"); using Coverage; Coveralls.submit(Coveralls.process_folder())'; fi

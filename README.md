@@ -1,5 +1,7 @@
 # PersistentCollections.jl
 
+[![Build Status](https://travis-ci.com/blenessy/PersistentCollections.jl.svg?branch=master)](https://travis-ci.com/blenessy/PersistentCollections.jl) [![Coverage Status](https://coveralls.io/repos/github/blenessy/PersistentCollections.jl/badge.svg?branch=master)](https://coveralls.io/github/blenessy/PersistentCollections.jl?branch=master)
+
 Julia `Dict` and `Set` data structures safely persisted to disk.
 
 All collections are backed by [LMDB](https://en.wikipedia.org/wiki/Lightning_Memory-Mapped_Database) - a super fast B-Tree based embedded KV database with ACID guaranties.
