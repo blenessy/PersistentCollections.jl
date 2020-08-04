@@ -65,7 +65,7 @@ mutable struct MDBValue{T}
         o = new{T}(sizeof(v), C_NULL, v)
         # mutable struct have static pointer address so its safe to just return that
         # primitive types and immutable structs have been copied into o - point to that instead
-        o.ptr = ismutable(v) ? pointer_from_objref(v) : pointer_from_objref(o) + @fieldoffset(MDBValue{0}, 3)
+        o.ptr = isimmutable(v) ? pointer_from_objref(o) + @fieldoffset(MDBValue{0}, 3) : pointer_from_objref(v)
         return o
     end
 end

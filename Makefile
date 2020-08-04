@@ -2,7 +2,7 @@ JULIA = julia
 
 .PHONY: test
 test: clean
-	JULIA_NUM_THREADS=999999 JULIA_DEBUG=Nonsensus $(JULIA) --compiled-modules=no --track-allocation=user -e 'import Pkg; Pkg.activate("."); Pkg.test(coverage=true)'
+	JULIA_NUM_THREADS=999999 JULIA_DEBUG=PersistentCollections $(JULIA) --compiled-modules=no --track-allocation=user -e 'import Pkg; Pkg.activate("."); Pkg.test(coverage=true)'
 
 .PHONY: coverage
 coverage:
