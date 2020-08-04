@@ -3,10 +3,10 @@
 Julia `Dict` and `Set` data structures safely persisted to disk.
 
 All collections are backed by [LMDB](https://en.wikipedia.org/wiki/Lightning_Memory-Mapped_Database) - a super fast B-Tree based embedded KV database with ACID guaranties.
-As with other B-Tree based databases reads are generally faster than writes. LMDB is not an exception, although write performance is relatively good to (expect 1k-10k TPS).
+As with other B-Tree based databases reads are faster than writes. However, write performance is still decent (expect 1k-10k TPS).
 
-Care was taken to make the datastructures thread-safe. LMDB handles most of the locking well, we just have to serialise the writes to an LMDB Environment in julia so that
-multiple threads do not attempt to write at once (deadlock will occur).
+Care was taken to make the data structures thread-safe. LMDB handles most of the locking well - we just have to exclusively lock the `LMDB.Environment` when writing
+to prevent multiple threads opening multile write transactions (deadlock will occur).
 
 ## Quick Start
 
@@ -118,8 +118,8 @@ make bench
 ### CI/CD
 
 - [x] Travis CI integration
-- [ ] Coveralls integration (when public)
-- [ ] All platforms supported
+- [x] Coveralls integration (when public)
+- [x] All platforms supported
 - [ ] Part of Julia Registry
 
 ### PersistentDict
