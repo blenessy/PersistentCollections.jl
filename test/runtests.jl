@@ -38,10 +38,10 @@ end
 Base.:(==)(a::Mutable, b::Mutable) = a.a == b.a && a.b == b.b && a.c == b.c
 
 ro = Immutable(1, 2.5, (2, 3.4))
-@assert !ismutable(ro)
+@assert isimmutable(ro)
 
 rw = Mutable(1, 2.5, (2, 3.4))
-@assert ismutable(rw)
+@assert !isimmutable(rw)
 
 fastkey = LMDB.MDBValue("fastkey")
 fastval = LMDB.MDBValue("fastval")
