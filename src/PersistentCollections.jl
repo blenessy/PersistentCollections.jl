@@ -11,7 +11,7 @@ module PersistentCollections
         PersistentDict{K,V}(env; id="") where {K,V} = new{K,V}(env, id)
     end
 
-    Base.show(io::IO, d::PersistentDict) = print(io, typeof(d), "(", isempty(d.id) ? "" : repr(e.id), ")")
+    Base.show(io::IO, d::PersistentDict) = print(io, typeof(d), "(", isempty(d.id) ? "" : repr(d.id), ")")
 
     function rotxn(func::Function, d::PersistentDict)
         isopen(d.env) || error("Environment is closed")
