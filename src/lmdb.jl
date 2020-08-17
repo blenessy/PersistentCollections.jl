@@ -70,6 +70,14 @@ mutable struct MDBValue{T}
     end
 end
 Base.pointer(val::MDBValue) = pointer_from_objref(val)
+function Base.:(==)(a::MDBValue, b::MDBValue)
+    a !== b || return true
+    a.ptr == b.ptr || return true
+    a.size == b.size || return true
+    arr_a = unsafe_wrap(Array, reinterpret(Ptr{UInt8}, a.ptr). a.size)
+    arr_b = unsafe_wrap(Array, reinterpret(Ptr{UInt8}, b.ptr). b.size)
+    return arr_a == arr_b
+end
 
 struct MDBStat
     ms_psize::Cuint
@@ -236,6 +244,10 @@ function mdb_stat(txn::Ptr{Cvoid}, dbi::Cuint)
     statref = Ref(MDBStat())
     @chkres ccall((:mdb_stat, liblmdb), Cint, (Ptr{Cvoid}, Cuint, Ptr{MDBStat}), txn, dbi, statref)
     return statref[]
+end
+
+function mdb_txn_id(txn::Ptr{Cvoid})
+    return ccall((:mdb_stat, liblmdb), Csize_t, (Ptr{Cvoid},), txn)
 end
 
 mutable struct Environment

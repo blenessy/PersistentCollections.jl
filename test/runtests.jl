@@ -50,6 +50,9 @@ fastval = LMDB.MDBValue("fastval")
 # Open up default database as a Dict
 d = PersistentDict{Any,Any}(env, id="foo")
 
+@test_throws BoundsError first(d)
+@test_throws BoundsError last(d)
+
 d["stringkey"] = "stringval"
 d["byteskey"] = Vector{UInt8}("bytesval")
 d["intkey"] = 1234
@@ -60,6 +63,10 @@ d["mutable_struct_key"] = rw
 d[fastkey] = fastval
 # Set use-case
 d["nothing_key"] = nothing
+
+# sorted lexically
+@test first(d) == Pair(LMDB.MDBValue("byteskey"), LMDB.MDBValue(Vector{UInt8}("bytesval")))
+@test last(d) == Pair(LMDB.MDBValue("tuplekey"), LMDB.MDBValue((1, 2.5)))
 
 @test get(d, "stringkey", "") == "stringval"
 @test get(d, "byteskey", UInt8[]) == Vector{UInt8}("bytesval")
@@ -90,7 +97,7 @@ notfound = UInt8[0x1]
 @test (d["dictkey"] = "dictval") == "dictval"
 
 # manual sync
-unsafe_env = LMDB.Environment(UNSAFE_ENV_DIR, maxdbs=1, flags=LMDB.MDB_NOSYNC)
+unsafe_env = LMDB.Environment(UNSAFE_ENV_DIR, maxdbs=1, flags=LMDB.MDB_WRITEMAP | LMDB.MDB_MAPASYNC)
 unsafe_dict = PersistentDict{String,Vector{UInt8}}(unsafe_env, id="foo")
 flush(unsafe_env) do
     unsafe_dict["unsafe_key1"] = Vector{UInt8}("unsafe_val1")
@@ -109,6 +116,7 @@ if Threads.nthreads() > 1
     Threads.@threads for i in 1:Threads.nthreads()
         while time() < deadline
             d[fastkey] = randvals[i]
+            writes[i] += 1
         end
     end
     @info "... $(sum(writes)) writes completed!"
@@ -134,6 +142,9 @@ if get(ENV, "BENCH", "") == "y"
     @info "Benchmarking itertion: iterated(::PersistentDict)) ($n entries) ..."
     @btime for _ in d end
 
-    @info "Benchmarking MDB_NOSYNC + setindex!(::PersistentDict) ..."
+    @info "Benchmarking last(::PersistentDict) ..."
+    @btime last(d)
+
+    @info "Benchmarking (MDB_WRITEMAP | MDB_MAPASYNC) with setindex!(::PersistentDict) ..."
     @btime setindex!(unsafe_dict, v, longkey) setup=(v=rand(UInt8, 500))
 end
