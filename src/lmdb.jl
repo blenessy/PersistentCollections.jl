@@ -5,10 +5,17 @@ const MDB_SUCCESS = Cint(0)
 const MDB_NOTFOUND = Cint(-30798)
 
 # Environment flags (TODO: define more)
+
+const MDB_FIXEDMAP = Cuint(0x01)
 const MDB_NOSUBDIR = Cuint(0x4000)
 const MDB_NOSYNC = Cuint(0x10000)
 const MDB_RDONLY = Cuint(0x20000)
+const MDB_WRITEMAP = Cuint(0x80000)
+const MDB_MAPASYNC = Cuint(0x100000)
 const MDB_NOTLS = Cuint(0x200000)
+const MDB_NOLOCK = Cuint(0x400000)
+const MDB_NORDAHEAD = Cuint(0x800000)
+const MDB_NOMEMINIT = Cuint(0x1000000)
 
 # DBI flags
 const MDB_CREATE = Cuint(0x40000)
@@ -240,7 +247,7 @@ end
 
 const OPENED_ENVS = Dict{String,Environment}()
 
-function Environment(path::String; flags::Cuint=zero(Cuint), mode::Cmode_t=0o755, maxdbs=0, mapsize=10485760, maxreaders=126, rotxnflags::Cuint=DEFAULT_ROTXN_FLAGS)
+function Environment(path::String; flags::Cuint=0x80000|0x100000, mode::Cmode_t=0o755, maxdbs=0, mapsize=10485760, maxreaders=126, rotxnflags::Cuint=DEFAULT_ROTXN_FLAGS)
     env = get(OPENED_ENVS, path, nothing)
     if isnothing(env)
         # create all directories needed to host the data
