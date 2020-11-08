@@ -1,7 +1,7 @@
 name = "PersistentCollections"
 uuid = "84dc0e8b-87a2-413f-9462-a65634c44495"
 authors = ["Zalan Blenessy <zalan.blenessy@gmail.com>"]
-version = "0.1.0"
+version = "0.2.0"
 
 [deps]
 LMDB_jll = "6206cf0b-f360-5984-af49-5437264c140e"
