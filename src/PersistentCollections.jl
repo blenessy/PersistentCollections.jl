@@ -69,6 +69,49 @@ module PersistentCollections
         return mdbval # return unconverted
     end
 
+    function Base.get!(d::PersistentDict{K,V}, key::K, default::D) where {K,V,D}
+        mdbkey, mdbval = convert(LMDB.MDBValue, key), LMDB.MDBValue()
+        found = rotxn(d) do txn, dbi
+            GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, pointer(mdbkey), pointer(mdbval))
+        end
+        if !found
+            d[key] = value
+            return default
+        end
+        # try converting if possible
+        V == Any || return convert(V, mdbval)
+        D == Nothing || return convert(D, mdbval)
+        return mdbval # return unconverted
+    end
+
+    function Base.get(f::F, d::PersistentDict{K,V}, key::K) where {K,V,F<:Function}
+        mdbkey, mdbval = convert(LMDB.MDBValue, key), LMDB.MDBValue()
+        found = rotxn(d) do txn, dbi
+            GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, pointer(mdbkey), pointer(mdbval))
+        end
+        found || return f()
+        # try converting if possible
+        V == Any || return convert(V, mdbval)
+        D == Nothing || return convert(D, mdbval)
+        return mdbval # return unconverted
+    end
+
+    function Base.get!(f::F, d::PersistentDict{K,V}, key::K) where {K,V,F<:Function}
+        mdbkey, mdbval = convert(LMDB.MDBValue, key), LMDB.MDBValue()
+        found = rotxn(d) do txn, dbi
+            GC.@preserve mdbkey LMDB.mdb_get!(txn, dbi, pointer(mdbkey), pointer(mdbval))
+        end
+        if !found
+            default = f()
+            d[key] = default
+            return default
+        end
+        # try converting if possible
+        V == Any || return convert(V, mdbval)
+        D == Nothing || return convert(D, mdbval)
+        return mdbval # return unconverted
+    end
+
     function Base.getindex(d::PersistentDict{K,V}, key::K) where {K,V}
         val = get(d, key, nothing)
         isnothing(val) || return val
@@ -130,7 +173,7 @@ module PersistentCollections
         end
         return nothing
     end
-   
+
     Base.close(iter::AbstractMDBCursor) = close_atomic_cursor(iter.cur)
 
     # multi-threading might introduce race-condition where wrong length is reported
@@ -152,14 +195,14 @@ module PersistentCollections
         finished = !LMDB.mdb_cursor_get!(convert(Ptr{Cvoid}, iter.cur[]), pointer(mdbkey), pointer(mdbval), op)
         finished || return (convert(K, mdbkey), LMDB.MDB_NEXT)
         close(iter)
-        return nothing        
+        return nothing
     end
     function Base.iterate(iter::MDBValCursor{K,V}, op=LMDB.MDB_FIRST) where {K,V}
         mdbkey, mdbval = LMDB.MDBValue(), LMDB.MDBValue()
         finished = !LMDB.mdb_cursor_get!(convert(Ptr{Cvoid}, iter.cur[]), pointer(mdbkey), pointer(mdbval), op)
         finished || return (convert(V, mdbval), LMDB.MDB_NEXT)
         close(iter)
-        return nothing        
+        return nothing
     end
 
     function Base.iterate(d::PersistentDict{K,V}, iter=nothing) where {K,V}
