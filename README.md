@@ -1,5 +1,9 @@
 # PersistentCollections.jl
 
+**<H1>NOTE: This project is up for Adoption, will no longer accept PR(s) and maintain it.</H1>**
+
+## Introduction
+
 [![Build Status](https://travis-ci.com/blenessy/PersistentCollections.jl.svg?branch=master)](https://travis-ci.com/blenessy/PersistentCollections.jl) [![Coverage Status](https://coveralls.io/repos/github/blenessy/PersistentCollections.jl/badge.svg?branch=master)](https://coveralls.io/github/blenessy/PersistentCollections.jl?branch=master)
 
 Julia `Dict` and `Set` data structures safely persisted to disk.
