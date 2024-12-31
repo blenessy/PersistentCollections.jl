@@ -3,3 +3,4 @@
 *.cov
 *.mem
 test/coverage/
+Manifest.toml
